@@ -42,12 +42,18 @@ jobs:
           echo "Ingest layer size:"
           du -sh ../../ingest-layer.zip
 
-      - name: Publish ingest layer to AWS
+      - name: Upload ingest layer zip to S3
+        run: |
+          aws s3 cp ingest-layer.zip \
+            s3://rag-chatbot-store/layers/ingest-layer.zip \
+            --region us-east-1
+
+      - name: Publish ingest layer from S3
         id: publish-ingest-layer
         run: |
           LAYER_ARN=$(aws lambda publish-layer-version \
             --layer-name rag-chatbot-ingest-deps \
-            --zip-file fileb://ingest-layer.zip \
+            --content S3Bucket=rag-chatbot-store,S3Key=layers/ingest-layer.zip \
             --compatible-runtimes python3.11 \
             --region us-east-1 \
             --query 'LayerVersionArn' \
@@ -67,12 +73,18 @@ jobs:
           echo "Query layer size:"
           du -sh ../../query-layer.zip
 
-      - name: Publish query layer to AWS
+      - name: Upload query layer zip to S3
+        run: |
+          aws s3 cp query-layer.zip \
+            s3://rag-chatbot-store/layers/query-layer.zip \
+            --region us-east-1
+            
+      - name: Publish query layer from S3
         id: publish-query-layer
         run: |
           LAYER_ARN=$(aws lambda publish-layer-version \
             --layer-name rag-chatbot-query-deps \
-            --zip-file fileb://query-layer.zip \
+            --content S3Bucket=rag-chatbot-store,S3Key=layers/query-layer.zip \
             --compatible-runtimes python3.11 \
             --region us-east-1 \
             --query 'LayerVersionArn' \
