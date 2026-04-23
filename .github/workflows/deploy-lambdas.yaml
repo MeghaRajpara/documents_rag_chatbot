@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'lambdas/**'    # Only runs when Lambda code changes
+      - 'lambdas/**'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,6 @@ jobs:
   deploy-ingest-lambda:
     name: Deploy Ingest Lambda
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -27,22 +26,18 @@ jobs:
           role-to-assume: arn:aws:iam::449112697282:role/RagChatbotGitHubActionsRole
           aws-region: us-east-1
 
-      - name: Install dependencies into package folder
+      - name: Install dependencies
         run: |
           cd lambdas/ingest
-          pip install \
-            -r requirements.txt \
-            -t package/ \
-            --upgrade
+          pip install -r requirements.txt -t package/ --upgrade
 
-      - name: Zip Lambda function with dependencies
+      - name: Zip function
         run: |
           cd lambdas/ingest
           cp handler.py package/
-          cd package
-          zip -r ../function.zip .
+          cd package && zip -r ../function.zip .
 
-      - name: Deploy to AWS Lambda
+      - name: Deploy to Lambda
         run: |
           aws lambda update-function-code \
             --function-name rag-chatbot-ingest \
@@ -59,7 +54,6 @@ jobs:
   deploy-query-lambda:
     name: Deploy Query Lambda
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -70,22 +64,18 @@ jobs:
           role-to-assume: arn:aws:iam::449112697282:role/RagChatbotGitHubActionsRole
           aws-region: us-east-1
 
-      - name: Install dependencies into package folder
+      - name: Install dependencies
         run: |
           cd lambdas/query
-          pip install \
-            -r requirements.txt \
-            -t package/ \
-            --upgrade
+          pip install -r requirements.txt -t package/ --upgrade
 
-      - name: Zip Lambda function with dependencies
+      - name: Zip function
         run: |
           cd lambdas/query
           cp handler.py package/
-          cd package
-          zip -r ../function.zip .
+          cd package && zip -r ../function.zip .
 
-      - name: Deploy to AWS Lambda
+      - name: Deploy to Lambda
         run: |
           aws lambda update-function-code \
             --function-name rag-chatbot-query \
