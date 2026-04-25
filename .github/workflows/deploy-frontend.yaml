@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'frontend/**'   # Only triggers when frontend code changes
+      - 'frontend/**'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   deploy-frontend:
-    name: Build and Push Frontend Image
+    name: Build and Deploy Frontend to ECS
     runs-on: ubuntu-latest
 
     steps:
@@ -43,7 +43,21 @@ jobs:
           docker push $ECR_REGISTRY/rag-chatbot-frontend:$IMAGE_TAG
           docker push $ECR_REGISTRY/rag-chatbot-frontend:latest
 
-      - name: Confirm image pushed
+      - name: Update ECS service with new image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          echo "✅ Frontend image pushed to ECR"
-          echo "Image: ${{ steps.login-ecr.outputs.registry }}/rag-chatbot-frontend:${{ github.sha }}"
+          aws ecs update-service \
+            --cluster rag-chatbot-cluster \
+            --service rag-chatbot-service \
+            --force-new-deployment \
+            --region ${{ vars.AWS_REGION }}
+
+      - name: Wait for ECS deployment to complete
+        run: |
+          aws ecs wait services-stable \
+            --cluster rag-chatbot-cluster \
+            --services rag-chatbot-service \
+            --region ${{ vars.AWS_REGION }}
+          echo "✅ ECS deployment complete"
