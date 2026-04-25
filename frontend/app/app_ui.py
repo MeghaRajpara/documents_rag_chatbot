@@ -222,7 +222,8 @@ def build_ui() -> gr.Blocks:
             with gr.Column(scale=2):
                 chatbot = gr.Chatbot(
                     label="Chat",
-                    height=400
+                    height=400,
+                    type="messages"
                 )
                 with gr.Row():
                     question_input = gr.Textbox(
