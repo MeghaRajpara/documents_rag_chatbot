@@ -1,10 +1,4 @@
-openai
-langchain
-langchain-openai
-langchain-community
-langchain-classic
-faiss-cpu
-gradio
-python-dotenv
-pypdf
-tiktoken
+gradio==5.25.0
+boto3==1.38.0
+requests==2.32.3
+python-dotenv==1.1.0
