@@ -18,6 +18,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from urllib.parse import unquote_plus
 
 # Initialize AWS clients outside handler
 # This is best practice — reused across warm Lambda invocations
@@ -124,7 +125,7 @@ def handler(event, context):
     # Extract bucket and key from S3 event
     record = event["Records"][0]
     bucket = record["s3"]["bucket"]["name"]
-    pdf_key = record["s3"]["object"]["key"]
+    pdf_key = unquote_plus(record["s3"]["object"]["key"])
 
     print(f"Processing: s3://{bucket}/{pdf_key}")
 
