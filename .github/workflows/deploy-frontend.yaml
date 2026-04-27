@@ -49,15 +49,15 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           aws ecs update-service \
-            --cluster rag-chatbot-cluster \
-            --service rag-chatbot-service \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --service ${{ vars.ECS_SERVICE }} \
             --force-new-deployment \
             --region ${{ vars.AWS_REGION }}
 
       - name: Wait for ECS deployment to complete
         run: |
           aws ecs wait services-stable \
-            --cluster rag-chatbot-cluster \
-            --services rag-chatbot-service \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --services ${{ vars.ECS_SERVICE }} \
             --region ${{ vars.AWS_REGION }}
           echo "✅ ECS deployment complete"
