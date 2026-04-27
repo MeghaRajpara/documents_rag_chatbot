@@ -36,113 +36,134 @@ def get_filename_without_extension(filepath: str) -> str:
     return os.path.splitext(basename)[0]
 
 
-def upload_pdf_to_s3(
-    pdf_path: str,
+def upload_pdfs_to_s3(
+    pdf_files: list,
     session_id: str
-) -> tuple[str, str]:
+) -> list:
     """
-    Upload PDF to S3 under pdfs/{session_id}/{filename}.pdf
-    This automatically triggers the ingest Lambda via S3 event.
-
-    Returns:
-        s3_key:   full S3 path of uploaded PDF
-        filename: name without extension (used for querying)
+    Upload multiple PDFs to S3 under same session.
     """
-    filename = get_filename_without_extension(pdf_path)
-    s3_key = f"pdfs/{session_id}/{filename}.pdf"
+    filenames = []
+    for pdf_file in pdf_files:
+        filename = get_filename_without_extension(pdf_file.name)
+        s3_key = f"pdfs/{session_id}/{filename}.pdf"
+        print(f"Uploading {filename} to s3://{S3_BUCKET_NAME}/{s3_key}")
+        s3_client.upload_file(pdf_file.name, S3_BUCKET_NAME, s3_key)
+        filenames.append(filename)
+        print(f"Uploaded {filename} ✅")
+    return filenames
 
-    print(f"Uploading PDF to s3://{S3_BUCKET_NAME}/{s3_key}")
-    s3_client.upload_file(pdf_path, S3_BUCKET_NAME, s3_key)
-    print("Upload complete — ingest Lambda triggered automatically")
 
-    return s3_key, filename
-
-
-def wait_for_faiss_index(
+def wait_for_all_faiss_indexes(
     session_id: str,
-    filename: str,
-    max_wait_seconds: int = 120
+    filenames: list,
+    max_wait_seconds: int = 180
 ) -> bool:
     """
-    Poll S3 until FAISS index files appear.
-    Ingest Lambda creates these after processing the PDF.
-
     Checks every 5 seconds up to max_wait_seconds.
     Returns True if index is ready, False if timed out.
     """
-    faiss_key = f"faiss/{session_id}/{filename}/index.faiss"
-    print(f"Waiting for FAISS index at s3://{S3_BUCKET_NAME}/{faiss_key}")
+    print(f"Waiting for {len(filenames)} FAISS indexes...")
 
     for attempt in range(max_wait_seconds // 5):
-        try:
-            s3_client.head_object(
-                Bucket=S3_BUCKET_NAME,
-                Key=faiss_key
-            )
-            print(f"FAISS index ready after {attempt * 5} seconds ✅")
-            return True
-        except s3_client.exceptions.ClientError:
-            print(f"Not ready yet... waiting 5 seconds (attempt {attempt + 1})")
-            time.sleep(5)
+        all_ready = True
 
-    print("Timed out waiting for FAISS index ❌")
+        for filename in filenames:
+            faiss_key = f"faiss/{session_id}/{filename}/index.faiss"
+            try:
+                s3_client.head_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=faiss_key
+                )
+                print(f"✅ {filename} index ready")
+            except s3_client.exceptions.ClientError:
+                print(f"⏳ {filename} not ready yet...")
+                all_ready = False
+                break
+
+        if all_ready:
+            print(f"All indexes ready after {attempt * 5} seconds ✅")
+            return True
+
+        time.sleep(5)
+
     return False
 
 
 def query_api_gateway(
     question: str,
     session_id: str,
-    filename: str,
+    filenames: list,
     history: list
 ) -> dict:
     """
-    Send question to API Gateway.
+    Query across ALL uploaded PDFs and combine answers.
     """
-    payload = {
-        "question":   question,
-        "session_id": session_id,
-        "filename":   filename,
-        "history":    history
+    all_answers = []
+    all_sources = []
+
+    for filename in filenames:
+        payload = {
+            "question":   question,
+            "session_id": session_id,
+            "filename":   filename,
+            "history":    history
+        }
+
+        print(f"Querying {filename}...")
+        response = requests.post(
+            API_GATEWAY_URL,
+            json=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        answer  = result.get("answer", "")
+        sources = result.get("sources", [])
+
+        if answer:
+            all_answers.append(f"**{filename}:**\n{answer}")
+        if sources:
+            all_sources.extend([f"{filename} - {s}" for s in sources])
+
+    return {
+        "answer":  "\n\n".join(all_answers),
+        "sources": all_sources
     }
-
-    print(f"Calling API Gateway: {API_GATEWAY_URL}")
-    response = requests.post(
-        API_GATEWAY_URL,
-        json=payload,
-        timeout=60   # Lambda can take up to 60s on cold start
-    )
-    response.raise_for_status()
-    return response.json()
-
-
 # ── Gradio Event Handlers ──────────────────────────────────────
 
-def handle_pdf_upload(pdf_file) -> tuple:
+def handle_pdf_upload(pdf_files: list) -> tuple:
     """
     Called when user uploads a PDF.
     """
-    if pdf_file is None:
-        return None, None, "⚠️ Please upload a PDF file"
+    if not pdf_files:
+        return None, None, "⚠️ Please upload one or more PDF files"
 
     try:
-        # Generate unique session for this upload
         session_id = generate_session_id()
-        filename = get_filename_without_extension(pdf_file.name)
 
-        # Upload to S3 — triggers ingest Lambda automatically
-        yield session_id, filename, "📤 Uploading PDF to S3..."
+        # Get all filenames
+        filenames = [
+            get_filename_without_extension(f.name)
+            for f in pdf_files
+        ]
+        filenames_str = ", ".join(filenames)
 
-        upload_pdf_to_s3(pdf_file.name, session_id)
+        yield session_id, filenames, f"📤 Uploading {len(pdf_files)} PDF(s) to S3..."
 
-        yield session_id, filename, "⚙️ Processing PDF... this may take 30-60 seconds"
+        # Upload all PDFs
+        upload_pdfs_to_s3(pdf_files, session_id)
 
-        # Wait for ingest Lambda to finish
-        index_ready = wait_for_faiss_index(session_id, filename)
+        yield session_id, filenames, f"⚙️ Processing {len(pdf_files)} PDF(s)... this may take 30-90 seconds"
 
-        if index_ready:
-            yield session_id, filename, f"✅ '{filename}.pdf' is ready! Ask me anything about it."
+        # Wait for all FAISS indexes
+        all_ready = wait_for_all_faiss_indexes(session_id, filenames)
+
+        if all_ready:
+            yield session_id, filenames, f"✅ Ready! Loaded: {filenames_str}"
         else:
-            yield session_id, filename, "❌ Processing timed out. Please try uploading again."
+            yield session_id, filenames, "❌ Processing timed out. Please try again."
 
     except Exception as e:
         print(f"Upload error: {str(e)}")
@@ -152,46 +173,53 @@ def handle_pdf_upload(pdf_file) -> tuple:
 def handle_question(
     question: str,
     session_id: str,
-    filename: str,
+    filenames: list,
     chat_history: list
 ) -> tuple:
-    """
-    Called when user submits a question.
-    """
     if not question.strip():
         return chat_history, ""
 
-    if not session_id or not filename:
-        chat_history.append((question, "⚠️ Please upload a PDF first!"))
+    if not session_id or not filenames:
+        chat_history.append({"role": "user",      "content": question})
+        chat_history.append({"role": "assistant",  "content": "⚠️ Please upload a PDF first!"})
         return chat_history, ""
 
     try:
-        # Call API Gateway
+        # Convert to API format
+        history_for_api = []
+        for i in range(0, len(chat_history) - 1, 2):
+            if i + 1 < len(chat_history):
+                history_for_api.append([
+                    chat_history[i]["content"],
+                    chat_history[i + 1]["content"]
+                ])
+
         result = query_api_gateway(
             question,
             session_id,
-            filename,
-            chat_history
+            filenames,
+            history_for_api
         )
 
         answer  = result.get("answer", "No answer returned")
         sources = result.get("sources", [])
 
-        # Add sources to answer if available
         if sources:
             sources_text = " | ".join(sources)
             answer = f"{answer}\n\n📄 Sources: {sources_text}"
 
-        chat_history.append((question, answer))
+        chat_history.append({"role": "user",      "content": question})
+        chat_history.append({"role": "assistant",  "content": answer})
         return chat_history, ""
 
     except requests.exceptions.Timeout:
-        chat_history.append((question, "⚠️ Request timed out. Lambda may be cold starting — try again."))
+        chat_history.append({"role": "user",      "content": question})
+        chat_history.append({"role": "assistant",  "content": "⚠️ Request timed out. Try again."})
         return chat_history, ""
 
     except Exception as e:
-        print(f"Query error: {str(e)}")
-        chat_history.append((question, f"❌ Error: {str(e)}"))
+        chat_history.append({"role": "user",      "content": question})
+        chat_history.append({"role": "assistant",  "content": f"❌ Error: {str(e)}"})
         return chat_history, ""
 
 
@@ -201,22 +229,22 @@ def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Document RAG Chatbot") as demo:
 
         gr.Markdown("# 📄 Document Q&A Chatbot")
-        gr.Markdown("Upload a PDF and ask questions about it.")
+        gr.Markdown("Upload one or more PDFs and ask questions about them.")
 
-        # Session state — persists across interactions
         session_id_state = gr.State(None)
         filename_state   = gr.State(None)
 
         with gr.Row():
             with gr.Column(scale=1):
-                pdf_input  = gr.File(
-                    label="Upload PDF",
-                    file_types=[".pdf"]
+                pdf_input = gr.File(
+                    label="Upload PDFs",
+                    file_types=[".pdf"],
+                    file_count="multiple"
                 )
                 status_msg = gr.Textbox(
                     label="Status",
                     interactive=False,
-                    value="Upload a PDF to get started"
+                    value="Upload PDFs to get started"
                 )
 
             with gr.Column(scale=2):
@@ -228,7 +256,7 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     question_input = gr.Textbox(
                         label="Your Question",
-                        placeholder="Ask anything about your document...",
+                        placeholder="Ask anything about your documents...",
                         scale=4
                     )
                     submit_btn = gr.Button(
@@ -237,7 +265,6 @@ def build_ui() -> gr.Blocks:
                         scale=1
                     )
 
-        # ── Event Bindings ──
         pdf_input.change(
             fn=handle_pdf_upload,
             inputs=[pdf_input],
@@ -250,7 +277,6 @@ def build_ui() -> gr.Blocks:
             outputs=[chatbot, question_input]
         )
 
-        # Allow pressing Enter to submit
         question_input.submit(
             fn=handle_question,
             inputs=[question_input, session_id_state, filename_state, chatbot],
@@ -258,7 +284,6 @@ def build_ui() -> gr.Blocks:
         )
 
     return demo
-
 
 def launch_ui():
     demo = build_ui()
